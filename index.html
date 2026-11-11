@@ -28,7 +28,7 @@
 <div id="ar"></div>
 <div id="ui"><div class="wrap">
   <h1>🐴🦊🤖 AR Карточки</h1>
-  <p class="hint">Добавьте карточки: для каждой — фото и 3D-модель (из списка или свою .glb). Затем «Старт» и наводите камеру на любую карточку.</p>
+  <p class="hint">Нажмите «Старт» и наведите камеру на карточку. Можно добавить свои карточки: фото и 3D-модель (из списка или свою .glb).</p>
   <div id="cards"></div>
   <button class="btn sec" id="add">+ Добавить карточку</button>
   <button class="btn" id="start" disabled>Старт</button>
@@ -65,7 +65,12 @@ const MODELS = [
 const $ = id => document.getElementById(id);
 const cards = [];   // { img, modelUrl, anim }
 
-function addCard() {
+// Карточки, встроенные в сайт: картинка из папки cards + модель
+const PRESET_CARDS = [
+  { src: 'cards/horse.jpg', model: T + 'Horse.glb' },
+];
+
+function addCard(preset) {
   const c = { img: null, modelUrl: MODELS[cards.length % MODELS.length].url, anim: null };
   c.anim = MODELS.find(m => m.url === c.modelUrl)?.anim;
   cards.push(c);
@@ -85,11 +90,18 @@ function addCard() {
     const f = photoIn.files[0]; if (!f) return;
     const img = new Image(); img.src = URL.createObjectURL(f); await img.decode();
     c.img = img;
+    setThumb(img);
+    refresh();
+  };
+  function setThumb(img) {
     thumb.style.backgroundImage = `url(${img.src})`;
     thumb.querySelector('br')?.remove();
     for (const n of [...thumb.childNodes]) if (n.nodeType === 3) n.textContent = '';
-    refresh();
-  };
+  }
+  if (preset) {
+    c.img = preset.img; c.modelUrl = preset.model; c.anim = MODELS.find(m => m.url === preset.model)?.anim;
+    sel.value = preset.model; setThumb(preset.img);
+  }
   sel.onchange = () => {
     own.hidden = sel.value !== '';
     c.modelUrl = sel.value || null; c.anim = MODELS.find(m => m.url === sel.value)?.anim;
@@ -111,8 +123,14 @@ function refresh() {
   $('progress').textContent = cards.length ? `Готово карточек: ${ready.length} из ${cards.length}` : '';
 }
 
-$('add').onclick = addCard;
-addCard();
+$('add').onclick = () => addCard();
+(async () => {
+  for (const p of PRESET_CARDS) {
+    try { const img = new Image(); img.src = p.src; await img.decode(); addCard({ img, model: p.model }); }
+    catch { console.warn('Не загрузилась карточка', p.src); }
+  }
+  if (!cards.length) addCard();
+})();
 
 $('start').onclick = async () => {
   const list = cards.filter(c => c.img && c.modelUrl);
