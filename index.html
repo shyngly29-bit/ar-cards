@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>AR Карточки</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #111; color: #fff; font-family: system-ui, sans-serif; }
+  #ar { position: fixed; inset: 0; }
+  #ui { position: fixed; inset: 0; overflow-y: auto; padding: 20px 16px 40px; background: #111; z-index: 10; box-sizing: border-box; }
+  .wrap { max-width: 520px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
+  h1 { margin: 0; font-size: 26px; text-align: center; }
+  .hint { margin: 0; color: #bbb; line-height: 1.4; text-align: center; }
+  .card { display: grid; grid-template-columns: 90px 1fr auto; gap: 10px; align-items: center; background: #1d1d1d; border-radius: 12px; padding: 10px; }
+  .thumb { width: 90px; height: 90px; border-radius: 8px; background: #2a2a2a center/cover no-repeat; display: flex; align-items: center; justify-content: center; font-size: 13px; color: #888; text-align: center; cursor: pointer; }
+  .fields { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  select, .own { width: 100%; padding: 8px; border-radius: 8px; border: 1px solid #333; background: #2a2a2a; color: #fff; font-size: 14px; box-sizing: border-box; }
+  .own { cursor: pointer; text-align: center; color: #aaa; }
+  .del { background: none; border: 0; color: #888; font-size: 22px; cursor: pointer; padding: 4px 8px; }
+  .btn { background: #e0a040; color: #111; border: 0; border-radius: 12px; padding: 14px 22px; font-size: 17px; font-weight: 600; cursor: pointer; }
+  .btn.sec { background: #2a2a2a; color: #fff; }
+  .btn:disabled { opacity: .5; }
+  #progress { text-align: center; color: #bbb; min-height: 1.2em; margin: 0; }
+  #status { position: fixed; left: 0; right: 0; bottom: 16px; text-align: center; z-index: 5; font-size: 15px; text-shadow: 0 1px 3px #000; }
+</style>
+</head>
+<body>
+<div id="ar"></div>
+<div id="ui"><div class="wrap">
+  <h1>🐴🦊🤖 AR Карточки</h1>
+  <p class="hint">Добавьте карточки: для каждой — фото и 3D-модель (из списка или свою .glb). Затем «Старт» и наводите камеру на любую карточку.</p>
+  <div id="cards"></div>
+  <button class="btn sec" id="add">+ Добавить карточку</button>
+  <button class="btn" id="start" disabled>Старт</button>
+  <p id="progress"></p>
+</div></div>
+<div id="status"></div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+  "mindar-image-three": "https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js"
+} }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { MindARThree } from 'mindar-image-three';
+
+const T = 'https://cdn.jsdelivr.net/gh/mrdoob/three.js@r160/examples/models/gltf/';
+const K = 'https://cdn.jsdelivr.net/gh/KhronosGroup/glTF-Sample-Models@master/2.0/';
+// Готовые модели (можно дописать свои: название + ссылка на .glb)
+const MODELS = [
+  { name: '🐴 Лошадь',   url: T + 'Horse.glb' },
+  { name: '🦊 Лиса',     url: K + 'Fox/glTF-Binary/Fox.glb', anim: 'Walk' },
+  { name: '🦩 Фламинго', url: T + 'Flamingo.glb' },
+  { name: '🦜 Попугай',  url: T + 'Parrot.glb' },
+  { name: '🕊 Аист',     url: T + 'Stork.glb' },
+  { name: '🤖 Робот',    url: T + 'RobotExpressive/RobotExpressive.glb', anim: 'Dance' },
+  { name: '💂 Солдат',   url: T + 'Soldier.glb', anim: 'Idle' },
+  { name: '💃 Мишель',   url: T + 'Michelle.glb' },
+];
+
+const $ = id => document.getElementById(id);
+const cards = [];   // { img, modelUrl, anim }
+
+function addCard() {
+  const c = { img: null, modelUrl: MODELS[cards.length % MODELS.length].url, anim: null };
+  c.anim = MODELS.find(m => m.url === c.modelUrl)?.anim;
+  cards.push(c);
+  const el = document.createElement('div');
+  el.className = 'card';
+  el.innerHTML = `
+    <label class="thumb">📷 фото<br>карточки<input type="file" accept="image/*" hidden></label>
+    <div class="fields">
+      <select>${MODELS.map(m => `<option value="${m.url}">${m.name}</option>`).join('')}<option value="">📁 Своя модель .glb…</option></select>
+      <label class="own" hidden>Выбрать файл .glb<input type="file" accept=".glb" hidden></label>
+    </div>
+    <button class="del" title="Удалить">✕</button>`;
+  const [photoIn, glbIn] = el.querySelectorAll('input');
+  const sel = el.querySelector('select'), own = el.querySelector('.own'), thumb = el.querySelector('.thumb');
+  sel.value = c.modelUrl;
+  photoIn.onchange = async () => {
+    const f = photoIn.files[0]; if (!f) return;
+    const img = new Image(); img.src = URL.createObjectURL(f); await img.decode();
+    c.img = img;
+    thumb.style.backgroundImage = `url(${img.src})`;
+    thumb.querySelector('br')?.remove();
+    for (const n of [...thumb.childNodes]) if (n.nodeType === 3) n.textContent = '';
+    refresh();
+  };
+  sel.onchange = () => {
+    own.hidden = sel.value !== '';
+    c.modelUrl = sel.value || null; c.anim = MODELS.find(m => m.url === sel.value)?.anim;
+    refresh();
+  };
+  glbIn.onchange = () => {
+    const f = glbIn.files[0]; if (!f) return;
+    c.modelUrl = URL.createObjectURL(f); c.anim = null; own.firstChild.textContent = '✓ ' + f.name;
+    refresh();
+  };
+  el.querySelector('.del').onclick = () => { cards.splice(cards.indexOf(c), 1); el.remove(); refresh(); };
+  $('cards').appendChild(el);
+  refresh();
+}
+
+function refresh() {
+  const ready = cards.filter(c => c.img && c.modelUrl);
+  $('start').disabled = !ready.length;
+  $('progress').textContent = cards.length ? `Готово карточек: ${ready.length} из ${cards.length}` : '';
+}
+
+$('add').onclick = addCard;
+addCard();
+
+$('start').onclick = async () => {
+  const list = cards.filter(c => c.img && c.modelUrl);
+  $('start').disabled = true;
+  try {
+    // 1. Компилируем фото карточек в цели для распознавания
+    if (!window.MINDAR?.IMAGE?.Compiler) await import('https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image.prod.js');
+    const compiler = new window.MINDAR.IMAGE.Compiler();
+    await compiler.compileImageTargets(list.map(c => c.img), p => $('progress').textContent = `Обработка карточек… ${p.toFixed(0)}%`);
+    const targetUrl = URL.createObjectURL(new Blob([await compiler.exportData()]));
+
+    $('ui').style.display = 'none';
+    $('status').textContent = 'Загрузка моделей…';
+
+    // 2. Сцена AR
+    const mindar = new MindARThree({ container: $('ar'), imageTargetSrc: targetUrl, maxTrack: Math.min(list.length, 2), uiScanning: 'no', uiLoading: 'no' });
+    const { renderer, scene, camera } = mindar;
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 2.5));
+    const sun = new THREE.DirectionalLight(0xffffff, 2); sun.position.set(1, 2, 3); scene.add(sun);
+
+    const loader = new GLTFLoader();
+    const mixers = [], holders = [];
+    let visible = 0;
+    const msg = () => $('status').textContent = visible ? '' : 'Наведите камеру на карточку';
+
+    await Promise.all(list.map(async (c, i) => {
+      const gltf = await loader.loadAsync(c.modelUrl);
+      const model = gltf.scene;
+      // Размер: самая большая сторона модели ≈ ширина карточки
+      const box = new THREE.Box3().setFromObject(model);
+      const size = box.getSize(new THREE.Vector3()), center = box.getCenter(new THREE.Vector3());
+      const s = 1 / Math.max(size.x, size.y, size.z);
+      model.scale.setScalar(s);
+      model.position.set(-center.x * s, -box.min.y * s, -center.z * s); // ставим на карточку по центру
+      const holder = new THREE.Group();
+      holder.add(model);
+      holder.rotation.x = Math.PI / 2; // модель «стоит» на карточке
+      const anchor = mindar.addAnchor(i);
+      anchor.group.add(holder);
+      holders.push(holder);
+
+      if (gltf.animations.length) {
+        const mixer = new THREE.AnimationMixer(model);
+        const clip = (c.anim && gltf.animations.find(a => a.name === c.anim))
+          || gltf.animations.find(a => /idle|walk|dance|survey/i.test(a.name))
+          || gltf.animations[0];
+        mixer.clipAction(clip).play();
+        mixers.push(mixer);
+      }
+      anchor.onTargetFound = () => { visible++; msg(); };
+      anchor.onTargetLost = () => { visible = Math.max(0, visible - 1); msg(); };
+    }));
+
+    await mindar.start();
+    msg();
+    const clock = new THREE.Clock();
+    renderer.setAnimationLoop(() => {
+      const dt = clock.getDelta();
+      mixers.forEach(m => m.update(dt));
+      holders.forEach(h => h.rotation.y += dt * 0.3); // медленно вращаются
+      renderer.render(scene, camera);
+    });
+  } catch (e) {
+    console.error(e);
+    $('ui').style.display = '';
+    $('progress').textContent = 'Ошибка: ' + (e.message || e);
+    $('start').disabled = false;
+  }
+};
+</script>
+</body>
+</html>
