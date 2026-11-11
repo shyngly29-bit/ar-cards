@@ -91,7 +91,7 @@ function addCard(preset) {
   photoIn.onchange = async () => {
     const f = photoIn.files[0]; if (!f) return;
     const img = await loadImg(URL.createObjectURL(f));
-    c.img = img;
+    c.img = img; c.key = `file:${f.name}:${f.size}:${f.lastModified}`;
     setThumb(img);
     refresh();
   };
@@ -101,7 +101,7 @@ function addCard(preset) {
     for (const n of [...thumb.childNodes]) if (n.nodeType === 3) n.textContent = '';
   }
   if (preset) {
-    c.img = preset.img; c.modelUrl = preset.model; c.anim = MODELS.find(m => m.url === preset.model)?.anim;
+    c.img = preset.img; c.key = preset.src; c.modelUrl = preset.model; c.anim = MODELS.find(m => m.url === preset.model)?.anim;
     sel.value = preset.model; setThumb(preset.img);
   }
   sel.onchange = () => {
@@ -123,33 +123,65 @@ function refresh() {
   const ready = cards.filter(c => c.img && c.modelUrl);
   $('start').disabled = !ready.length;
   $('progress').textContent = cards.length ? `Готово карточек: ${ready.length} из ${cards.length}` : '';
+  ready.forEach(c => warmModel(c.modelUrl));
+  prepareSoon();
 }
 
 $('add').onclick = () => addCard();
 (async () => {
   for (const p of PRESET_CARDS) {
-    try { addCard({ img: await loadImg(p.src), model: p.model }); }
+    try { addCard({ img: await loadImg(p.src), src: p.src, model: p.model }); }
     catch { console.warn('Не загрузилась карточка', p.src); }
   }
   if (!cards.length) addCard();
 })();
 
+// ---- Подготовка карточек заранее (пока человек читает страницу) + кэш на устройстве ----
+var memo = new Map();
+const idb = () => new Promise((ok, fail) => { const r = indexedDB.open('ar-cards', 1); r.onupgradeneeded = () => r.result.createObjectStore('t'); r.onsuccess = () => ok(r.result); r.onerror = fail; });
+const idbGet = async k => { try { const db = await idb(); return await new Promise(ok => { const q = db.transaction('t').objectStore('t').get(k); q.onsuccess = () => ok(q.result); q.onerror = () => ok(null); }); } catch { return null; } };
+const idbSet = async (k, v) => { try { const db = await idb(); db.transaction('t', 'readwrite').objectStore('t').put(v, k); } catch {} };
+// Уменьшаем картинку: так распознавание готовится и работает быстрее
+const shrink = (img, max = 640) => {
+  const k = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+  const cv = document.createElement('canvas'); cv.width = Math.round(img.naturalWidth * k); cv.height = Math.round(img.naturalHeight * k);
+  cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height); return cv;
+};
+function prepareTargets(list, showProgress) {
+  const key = 'v1|' + list.map(c => c.key).join('|');
+  if (!memo.has(key)) memo.set(key, (async () => {
+    const cached = await idbGet(key); if (cached) return cached;
+    if (!window.MINDAR?.IMAGE?.Compiler) await import('https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image.prod.js');
+    const compiler = new window.MINDAR.IMAGE.Compiler();
+    await compiler.compileImageTargets(list.map(c => shrink(c.img)), p => { if (prepareTargets.show) $('progress').textContent = `Подготовка карточек… ${p.toFixed(0)}%`; });
+    const data = await compiler.exportData();
+    idbSet(key, data); return data;
+  })());
+  if (showProgress) prepareTargets.show = true;
+  const p = memo.get(key); p.catch(() => memo.delete(key)); return p;
+}
+var prepTimer;
+function prepareSoon() {
+  clearTimeout(prepTimer);
+  prepTimer = setTimeout(() => { const l = cards.filter(c => c.img && c.modelUrl); if (l.length) prepareTargets(l).catch(() => {}); }, 800);
+}
+var warmed = new Set();
+function warmModel(url) { if (url && !url.startsWith('blob:') && !warmed.has(url)) { warmed.add(url); fetch(url).catch(() => {}); } }
+
 $('start').onclick = async () => {
   const list = cards.filter(c => c.img && c.modelUrl);
   $('start').disabled = true;
   try {
-    // 1. Компилируем фото карточек в цели для распознавания
-    if (!window.MINDAR?.IMAGE?.Compiler) await import('https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image.prod.js');
-    const compiler = new window.MINDAR.IMAGE.Compiler();
-    await compiler.compileImageTargets(list.map(c => c.img), p => $('progress').textContent = `Обработка карточек… ${p.toFixed(0)}%`);
-    const targetUrl = URL.createObjectURL(new Blob([await compiler.exportData()]));
+    // 1. Цели для распознавания (обычно уже готовы заранее или из кэша)
+    const targetUrl = URL.createObjectURL(new Blob([await prepareTargets(list, true)]));
 
     $('ui').style.display = 'none';
     $('status').textContent = 'Загрузка моделей…';
 
     // 2. Сцена AR
-    const mindar = new MindARThree({ container: $('ar'), imageTargetSrc: targetUrl, maxTrack: Math.min(list.length, 2), uiScanning: 'no', uiLoading: 'no' });
+    const mindar = new MindARThree({ container: $('ar'), imageTargetSrc: targetUrl, maxTrack: 1, uiScanning: 'no', uiLoading: 'no' });
     const { renderer, scene, camera } = mindar;
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 2.5));
     const sun = new THREE.DirectionalLight(0xffffff, 2); sun.position.set(1, 2, 3); scene.add(sun);
