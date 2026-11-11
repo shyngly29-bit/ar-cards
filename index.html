@@ -70,6 +70,8 @@ const PRESET_CARDS = [
   { src: 'cards/horse.jpg', model: T + 'Horse.glb' },
 ];
 
+const loadImg = src => new Promise((ok, fail) => { const i = new Image(); i.onload = () => ok(i); i.onerror = fail; i.src = src; });
+
 function addCard(preset) {
   const c = { img: null, modelUrl: MODELS[cards.length % MODELS.length].url, anim: null };
   c.anim = MODELS.find(m => m.url === c.modelUrl)?.anim;
@@ -88,7 +90,7 @@ function addCard(preset) {
   sel.value = c.modelUrl;
   photoIn.onchange = async () => {
     const f = photoIn.files[0]; if (!f) return;
-    const img = new Image(); img.src = URL.createObjectURL(f); await img.decode();
+    const img = await loadImg(URL.createObjectURL(f));
     c.img = img;
     setThumb(img);
     refresh();
@@ -126,7 +128,7 @@ function refresh() {
 $('add').onclick = () => addCard();
 (async () => {
   for (const p of PRESET_CARDS) {
-    try { const img = new Image(); img.src = p.src; await img.decode(); addCard({ img, model: p.model }); }
+    try { addCard({ img: await loadImg(p.src), model: p.model }); }
     catch { console.warn('Не загрузилась карточка', p.src); }
   }
   if (!cards.length) addCard();
